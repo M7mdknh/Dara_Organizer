@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { useApi } from "@/lib/client";
-import { PageHeader, Spinner, Badge, EmptyState } from "@/components/ui";
+import { PageHeader, Spinner, Badge, EmptyState, Button } from "@/components/ui";
+import { useUpload } from "@/components/upload-context";
 
 interface Stats {
   totals: {
@@ -47,24 +48,41 @@ function coverageLabel(count: number, max: number): { label: string; cls: string
 
 export default function DashboardPage() {
   const { data, loading } = useApi<Stats>("/api/stats");
+  const { openUpload } = useUpload();
   if (loading || !data) return <Spinner />;
   const t = data.totals;
   const maxCoverage = Math.max(1, ...data.conversationalCoverage.map((c) => c.count));
   const maxDialect = Math.max(1, ...data.dialectDistribution.map((d) => d.count));
+  const totalRecords = t.concepts + t.expressions + t.sentences + t.conversations;
 
   const cards = [
-    { label: "Concepts", value: t.concepts, href: "/words?tab=concepts" },
-    { label: "Expressions", value: t.expressions, href: "/words" },
-    { label: "Sentences", value: t.sentences, href: "/sentences" },
-    { label: "Conversations", value: t.conversations, href: "/conversations" },
-    { label: "Response patterns", value: t.responsePatterns, href: "/responses" },
-    { label: "Pending review", value: t.reviewPending, href: "/review" },
+    { label: "Words & expressions", value: t.expressions, href: "/data?tab=words" },
+    { label: "Sentences", value: t.sentences, href: "/data?tab=sentences" },
+    { label: "Conversations", value: t.conversations, href: "/data?tab=conversations" },
+    { label: "Response patterns", value: t.responsePatterns, href: "/data?tab=responses" },
   ];
 
   return (
     <div>
-      <PageHeader title="Dashboard" subtitle="Corpus health and collection priorities" />
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
+      <PageHeader
+        title="Home"
+        subtitle={totalRecords > 0 ? `${totalRecords.toLocaleString()} records in your collection` : "Get started by uploading your first file"}
+        actions={<Button onClick={openUpload}>+ Upload Data</Button>}
+      />
+
+      {t.reviewPending > 0 && (
+        <Link
+          href="/review"
+          className="block card p-4 mb-6 border-amber-400/50 bg-amber-500/5 hover:bg-amber-500/10 transition-colors"
+        >
+          <span className="font-medium text-amber-700 dark:text-amber-400">
+            {t.reviewPending.toLocaleString()} {t.reviewPending === 1 ? "item needs" : "items need"} your attention
+          </span>
+          <span className="text-sm text-muted ms-2">Review possible duplicates and conflicts →</span>
+        </Link>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
         {cards.map((c) => (
           <Link key={c.label} href={c.href} className="card p-4 hover:border-accent transition-colors">
             <div className="text-2xl font-semibold">{c.value.toLocaleString()}</div>
