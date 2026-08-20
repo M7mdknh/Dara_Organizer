@@ -39,3 +39,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Claude Code session runtime state (not part of the application)
+.claude/scheduled_tasks.lock
+.claude/*.lock

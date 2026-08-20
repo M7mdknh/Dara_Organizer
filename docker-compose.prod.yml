@@ -1,0 +1,46 @@
+# Production reference compose. This intentionally does NOT run postgres,
+# redis, or minio as containers — production PostgreSQL+pgvector, Redis,
+# and S3-compatible storage should be managed services (see README §
+# "Production" for why). This file only runs the two application
+# containers, wired to those external services via environment variables.
+#
+# Typical usage: this compose file is a starting point for a single-host
+# deployment (or as a reference for translating to your orchestrator of
+# choice — ECS, Nomad, Kubernetes, etc.). Provide a real `.env.production`
+# (never committed) alongside it:
+#
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build
+#
+# All application data (Postgres, Redis, object storage) lives outside this
+# compose file's lifecycle — `docker compose down` here never touches it.
+
+services:
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  worker:
+    build:
+      context: .
+      target: worker
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      BACKGROUND_JOBS_ENABLED: "true"
+    deploy:
+      replicas: 1 # scale horizontally by increasing this; BullMQ workers coordinate via Redis

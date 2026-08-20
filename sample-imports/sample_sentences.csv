@@ -1,0 +1,4 @@
+text,meaning,dialect,language,intent,situation,category
+وش رايك نطلب أكل؟,"what do you think, should we order food?",Najdi,ar,REQUEST,Home,Food & Drink
+ممكن تجيب لي موية؟,can you bring me water?,Najdi,ar,REQUEST,Restaurant,Food & Drink
+لو سمحت الحساب,the bill please,Najdi,ar,REQUEST,Restaurant,Food & Drink

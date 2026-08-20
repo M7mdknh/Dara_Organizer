@@ -1,0 +1,1032 @@
+// Arabic Dialect Data Platform — core schema.
+// Concepts are the semantic anchors; expressions, sentences, responses, and
+// conversations are realizations linked through typed relations.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// pgvector's `vector` type is declared via Prisma's Unsupported() escape
+// hatch below (see Embedding model) — the extension itself is enabled by
+// a raw-SQL migration (prisma/migrations/.../migration.sql), not here.
+
+// ---------- Shared enums ----------
+
+enum Role {
+  ADMIN
+  EDITOR
+  REVIEWER
+  VIEWER
+}
+
+enum QualityTier {
+  GOLD
+  SILVER
+  REFERENCE
+  CANDIDATE
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  VERIFIED
+  REJECTED
+}
+
+enum TrainingEligibility {
+  ELIGIBLE
+  NOT_ELIGIBLE
+  UNDECIDED
+}
+
+enum Origin {
+  HUMAN
+  IMPORT
+  AI
+  REFERENCE
+}
+
+enum Commonness {
+  VERY_HIGH
+  HIGH
+  MEDIUM
+  LOW
+  RARE
+  CONTEXTUAL
+  UNKNOWN
+}
+
+enum Naturalness {
+  NATURAL
+  ACCEPTABLE
+  UNNATURAL
+  UNKNOWN
+}
+
+enum RejectionReason {
+  UNNATURAL
+  TOO_FORMAL
+  SOUNDS_MSA
+  WRONG_DIALECT
+  WRONG_CONTEXT
+  OUTDATED
+  INCORRECT
+  POOR_TRANSLATION
+  OTHER
+}
+
+// ---------- Users ----------
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  role         Role     @default(VIEWER)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  revisions     Revision[]
+  savedViews    SavedView[]
+  importJobs    ImportJob[]
+  reviewItems   ReviewItem[]     @relation("resolvedReviews")
+  datasets      DatasetVersion[]
+  auditLogs     AuditLog[]
+}
+
+// ---------- Configurable taxonomies ----------
+
+model Language {
+  id        String  @id @default(cuid())
+  code      String  @unique // e.g. ar, ar-MSA, en, fr, es
+  name      String
+  nameAr    String?
+  direction String  @default("ltr") // ltr | rtl
+  enabled   Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  expressions Expression[]
+  sentences   Sentence[]
+}
+
+model DialectNode {
+  id          String  @id @default(cuid())
+  name        String
+  nameAr      String?
+  slug        String  @unique
+  description String?
+  parentId    String?
+  parent      DialectNode?  @relation("dialectTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children    DialectNode[] @relation("dialectTree")
+  enabled     Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  expressions       Expression[]
+  sentences         Sentence[]
+  pronunciations    Pronunciation[]
+  responseVariants  ResponseVariant[]
+  responseTriggers  ResponseTrigger[]
+  conversations     Conversation[]
+  conversationTurns ConversationTurn[]
+
+  @@index([parentId])
+}
+
+model Category {
+  id        String     @id @default(cuid())
+  name      String
+  nameAr    String?
+  description String?
+  parentId  String?
+  parent    Category?  @relation("categoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  Category[] @relation("categoryTree")
+  enabled   Boolean    @default(true)
+  sortOrder Int        @default(0)
+
+  sentences     SentenceCategory[]
+  conversations ConversationCategory[]
+  expressions   ExpressionCategory[]
+
+  @@index([parentId])
+}
+
+model Topic {
+  id        String  @id @default(cuid())
+  name      String  @unique
+  nameAr    String?
+  description String?
+  enabled   Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  sentences SentenceTopic[]
+}
+
+model Intent {
+  id        String  @id @default(cuid())
+  name      String  @unique // e.g. ASK_WELLBEING
+  nameAr    String?
+  description String?
+  enabled   Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  sentences        Sentence[]
+  responsePatterns ResponsePattern[]
+  conversationTurns ConversationTurn[]
+  utteranceGroups  UtteranceGroup[]
+}
+
+model Situation {
+  id        String  @id @default(cuid())
+  name      String  @unique
+  nameAr    String?
+  description String?
+  enabled   Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  sentences     Sentence[]
+  conversations Conversation[]
+}
+
+model Register {
+  id        String  @id @default(cuid())
+  name      String  @unique // Formal, Casual, Intimate, ...
+  nameAr    String?
+  description String?
+  enabled   Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  sentences   Sentence[]
+  expressions Expression[]
+}
+
+model ConversationalFunction {
+  id        String  @id @default(cuid())
+  name      String  @unique // Greeting, Thanks, Response to praise, ...
+  nameAr    String?
+  description String?
+  enabled   Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  sentences         Sentence[]
+  conversationTurns ConversationTurn[]
+}
+
+// ---------- Semantic core ----------
+
+model Concept {
+  id          String   @id @default(cuid())
+  key         String   @unique // e.g. TIME_NOW
+  gloss       String // short meaning, e.g. "at the present time"
+  description String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  origin      Origin   @default(HUMAN)
+  sourceId    String?
+  source      Source?  @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+
+  expressions ConceptExpression[]
+  sentences   SentenceConcept[]
+}
+
+enum ExpressionType {
+  WORD
+  PHRASE
+  IDIOM
+  SLANG
+  GREETING
+  FORMULA
+  FILLER
+  DISCOURSE_MARKER
+  EXPRESSION
+}
+
+model Expression {
+  id             String         @id @default(cuid())
+  textOriginal   String
+  textNormalized String
+  languageId     String
+  language       Language       @relation(fields: [languageId], references: [id])
+  dialectId      String?
+  dialect        DialectNode?   @relation(fields: [dialectId], references: [id], onDelete: SetNull)
+  type           ExpressionType @default(EXPRESSION)
+  registerId     String?
+  register       Register?      @relation(fields: [registerId], references: [id], onDelete: SetNull)
+  commonness     Commonness     @default(UNKNOWN)
+  meaningNote    String?
+  usageNote      String?
+
+  quality       QualityTier         @default(CANDIDATE)
+  verification  VerificationStatus  @default(UNVERIFIED)
+  verifiedById  String?
+  verifiedAt    DateTime?
+  training      TrainingEligibility @default(UNDECIDED)
+  trainingNote  String?
+  origin        Origin              @default(HUMAN)
+  aiProvider    String?
+  aiModel       String?
+  aiGeneratedAt DateTime?
+  sourceId      String?
+  source        Source?             @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  status        String              @default("ACTIVE") // ACTIVE | REJECTED
+  rejectionReason RejectionReason?
+  rejectionNote String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  concepts       ConceptExpression[]
+  relationsFrom  ExpressionRelation[] @relation("relFrom")
+  relationsTo    ExpressionRelation[] @relation("relTo")
+  pronunciations Pronunciation[]
+  sentences      SentenceExpression[]
+  categories     ExpressionCategory[]
+  responseTriggers ResponseTrigger[]
+
+  @@index([textNormalized])
+  @@index([languageId])
+  @@index([dialectId])
+  @@index([quality])
+  @@index([verification])
+}
+
+model ConceptExpression {
+  id           String     @id @default(cuid())
+  conceptId    String
+  concept      Concept    @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+  expressionId String
+  expression   Expression @relation(fields: [expressionId], references: [id], onDelete: Cascade)
+  isPrimary    Boolean    @default(true)
+  senseNote    String?
+
+  @@unique([conceptId, expressionId])
+  @@index([expressionId])
+}
+
+enum ExpressionRelationType {
+  SYNONYM
+  NEAR_SYNONYM
+  DIALECT_EQUIVALENT
+  TRANSLATION
+  REGIONAL_VARIANT
+  SPELLING_VARIANT
+  PRONUNCIATION_VARIANT
+  FORMAL_EQUIVALENT
+  INFORMAL_EQUIVALENT
+  SLANG_EQUIVALENT
+  RELATED
+  COMMON_RESPONSE
+}
+
+model ExpressionRelation {
+  id     String                 @id @default(cuid())
+  fromId String
+  from   Expression             @relation("relFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  toId   String
+  to     Expression             @relation("relTo", fields: [toId], references: [id], onDelete: Cascade)
+  type   ExpressionRelationType
+  notes  String?
+  origin Origin                 @default(HUMAN)
+  createdAt DateTime            @default(now())
+
+  @@unique([fromId, toId, type])
+  @@index([toId])
+}
+
+model ExpressionCategory {
+  expressionId String
+  expression   Expression @relation(fields: [expressionId], references: [id], onDelete: Cascade)
+  categoryId   String
+  category     Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([expressionId, categoryId])
+}
+
+// ---------- Pronunciation ----------
+
+model Pronunciation {
+  id             String       @id @default(cuid())
+  expressionId   String?
+  expression     Expression?  @relation(fields: [expressionId], references: [id], onDelete: Cascade)
+  sentenceId     String?
+  sentence       Sentence?    @relation(fields: [sentenceId], references: [id], onDelete: Cascade)
+  dialectId      String?
+  dialect        DialectNode? @relation(fields: [dialectId], references: [id], onDelete: SetNull)
+  arabicPhonetic String? // pronunciation-oriented Arabic
+  diacritized    String? // with diacritics
+  ipa            String? // phonetic/phonemic
+  notes          String?
+  isVariant      Boolean      @default(false)
+  variantLabel   String?
+  verification   VerificationStatus @default(UNVERIFIED)
+  origin         Origin       @default(HUMAN)
+  aiProvider     String?
+  aiModel        String?
+  aiGeneratedAt  DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([expressionId])
+  @@index([sentenceId])
+}
+
+// ---------- Sentences & utterance groups ----------
+
+model UtteranceGroup {
+  id          String   @id @default(cuid())
+  name        String // "Ask what someone wants to do now"
+  meaning     String?
+  intentId    String?
+  intent      Intent?  @relation(fields: [intentId], references: [id], onDelete: SetNull)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  sentences Sentence[]
+}
+
+model Sentence {
+  id             String       @id @default(cuid())
+  textOriginal   String
+  textNormalized String
+  languageId     String
+  language       Language     @relation(fields: [languageId], references: [id])
+  dialectId      String?
+  dialect        DialectNode? @relation(fields: [dialectId], references: [id], onDelete: SetNull)
+  meaning        String?
+  literalNote    String? // optional literal translation note
+  utteranceGroupId String?
+  utteranceGroup UtteranceGroup? @relation(fields: [utteranceGroupId], references: [id], onDelete: SetNull)
+
+  intentId    String?
+  intent      Intent?    @relation(fields: [intentId], references: [id], onDelete: SetNull)
+  situationId String?
+  situation   Situation? @relation(fields: [situationId], references: [id], onDelete: SetNull)
+  registerId  String?
+  register    Register?  @relation(fields: [registerId], references: [id], onDelete: SetNull)
+  functionId  String?
+  function    ConversationalFunction? @relation(fields: [functionId], references: [id], onDelete: SetNull)
+
+  naturalness       Naturalness @default(UNKNOWN)
+  commonness        Commonness  @default(UNKNOWN)
+  isCorrect         Boolean?
+  dialectConfidence String? // HIGH | MEDIUM | LOW — human/AI judgment label, never fabricated numbers
+
+  quality       QualityTier         @default(CANDIDATE)
+  verification  VerificationStatus  @default(UNVERIFIED)
+  verifiedById  String?
+  verifiedAt    DateTime?
+  training      TrainingEligibility @default(UNDECIDED)
+  trainingNote  String?
+  origin        Origin              @default(HUMAN)
+  aiProvider    String?
+  aiModel       String?
+  aiGeneratedAt DateTime?
+  sourceId      String?
+  source        Source?             @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  status        String              @default("ACTIVE")
+  rejectionReason RejectionReason?
+  rejectionNote String?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  concepts       SentenceConcept[]
+  expressions    SentenceExpression[]
+  categories     SentenceCategory[]
+  topics         SentenceTopic[]
+  pronunciations Pronunciation[]
+  conversationTurns ConversationTurn[]
+  responseTriggers  ResponseTrigger[]
+  responseVariants  ResponseVariant[]
+
+  @@index([textNormalized])
+  @@index([languageId])
+  @@index([dialectId])
+  @@index([utteranceGroupId])
+  @@index([quality])
+  @@index([verification])
+  @@index([sourceId])
+}
+
+model SentenceConcept {
+  sentenceId String
+  sentence   Sentence @relation(fields: [sentenceId], references: [id], onDelete: Cascade)
+  conceptId  String
+  concept    Concept  @relation(fields: [conceptId], references: [id], onDelete: Cascade)
+
+  @@id([sentenceId, conceptId])
+}
+
+model SentenceExpression {
+  sentenceId   String
+  sentence     Sentence   @relation(fields: [sentenceId], references: [id], onDelete: Cascade)
+  expressionId String
+  expression   Expression @relation(fields: [expressionId], references: [id], onDelete: Cascade)
+
+  @@id([sentenceId, expressionId])
+}
+
+model SentenceCategory {
+  sentenceId String
+  sentence   Sentence @relation(fields: [sentenceId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([sentenceId, categoryId])
+}
+
+model SentenceTopic {
+  sentenceId String
+  sentence   Sentence @relation(fields: [sentenceId], references: [id], onDelete: Cascade)
+  topicId    String
+  topic      Topic    @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@id([sentenceId, topicId])
+}
+
+// ---------- Conversational responses ----------
+
+model ResponsePattern {
+  id          String   @id @default(cuid())
+  name        String // e.g. "Response to كفو"
+  intentId    String?
+  intent      Intent?  @relation(fields: [intentId], references: [id], onDelete: SetNull)
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  triggers ResponseTrigger[]
+  variants ResponseVariant[]
+}
+
+model ResponseTrigger {
+  id             String          @id @default(cuid())
+  patternId      String
+  pattern        ResponsePattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
+  textOriginal   String
+  textNormalized String
+  dialectId      String?
+  dialect        DialectNode?    @relation(fields: [dialectId], references: [id], onDelete: SetNull)
+  sentenceId     String?
+  sentence       Sentence?       @relation(fields: [sentenceId], references: [id], onDelete: SetNull)
+  expressionId   String?
+  expression     Expression?     @relation(fields: [expressionId], references: [id], onDelete: SetNull)
+  origin         Origin          @default(HUMAN)
+  createdAt      DateTime        @default(now())
+
+  @@index([patternId])
+  @@index([textNormalized])
+}
+
+model ResponseVariant {
+  id             String          @id @default(cuid())
+  patternId      String
+  pattern        ResponsePattern @relation(fields: [patternId], references: [id], onDelete: Cascade)
+  textOriginal   String
+  textNormalized String
+  dialectId      String?
+  dialect        DialectNode?    @relation(fields: [dialectId], references: [id], onDelete: SetNull)
+  sentenceId     String?
+  sentence       Sentence?       @relation(fields: [sentenceId], references: [id], onDelete: SetNull)
+  weight         Int             @default(10) // relative preference, editable
+  commonness     Commonness      @default(UNKNOWN) // human-estimated
+  corpusFrequency Int? // only from real corpus evidence, never fabricated
+  notes          String?
+
+  quality       QualityTier        @default(CANDIDATE)
+  verification  VerificationStatus @default(UNVERIFIED)
+  origin        Origin             @default(HUMAN)
+  aiProvider    String?
+  aiModel       String?
+  aiGeneratedAt DateTime?
+  status        String             @default("ACTIVE")
+  rejectionReason RejectionReason?
+  rejectionNote String?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  @@index([patternId])
+  @@index([textNormalized])
+}
+
+// ---------- Conversations ----------
+
+model Conversation {
+  id          String       @id @default(cuid())
+  title       String
+  description String?
+  dialectId   String?
+  dialect     DialectNode? @relation(fields: [dialectId], references: [id], onDelete: SetNull)
+  situationId String?
+  situation   Situation?   @relation(fields: [situationId], references: [id], onDelete: SetNull)
+
+  quality       QualityTier         @default(CANDIDATE)
+  verification  VerificationStatus  @default(UNVERIFIED)
+  training      TrainingEligibility @default(UNDECIDED)
+  origin        Origin              @default(HUMAN)
+  sourceId      String?
+  source        Source?             @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  turns      ConversationTurn[]
+  categories ConversationCategory[]
+}
+
+model ConversationTurn {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  orderIndex     Int
+  speaker        String // A / B / name
+  textOriginal   String
+  textNormalized String
+  dialectId      String?
+  dialect        DialectNode? @relation(fields: [dialectId], references: [id], onDelete: SetNull)
+  sentenceId     String?
+  sentence       Sentence?    @relation(fields: [sentenceId], references: [id], onDelete: SetNull)
+  intentId       String?
+  intent         Intent?      @relation(fields: [intentId], references: [id], onDelete: SetNull)
+  functionId     String?
+  function       ConversationalFunction? @relation(fields: [functionId], references: [id], onDelete: SetNull)
+  notes          String?
+  startMs        Int? // future audio alignment
+  endMs          Int?
+
+  @@unique([conversationId, orderIndex])
+  @@index([textNormalized])
+}
+
+model ConversationCategory {
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  categoryId     String
+  category       Category     @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([conversationId, categoryId])
+}
+
+// ---------- Sources & imports ----------
+
+enum SourceType {
+  MANUAL
+  XLSX
+  CSV
+  TXT
+  PASTE
+  AI
+  REFERENCE
+  AUDIO
+  VIDEO
+}
+
+model Source {
+  id          String     @id @default(cuid())
+  name        String
+  type        SourceType
+  filename    String?
+  description String?
+  license     String?
+  reliability String? // free-text notes on trust
+  defaultTraining TrainingEligibility @default(UNDECIDED)
+  createdById String?
+  createdAt   DateTime   @default(now())
+
+  // Original-file immutability: the uploaded object is never overwritten.
+  // Null when the source has no backing file (manual/AI-derived) or when
+  // STORAGE_PROVIDER=local (dev-only, file not durably persisted).
+  objectKey   String? // storage key, e.g. imports/<sourceId>/original.xlsx
+  mimeType    String?
+  fileSize    Int?
+  checksum    String? // sha256 of the original bytes — duplicate-upload detection
+  storedAt    DateTime?
+
+  concepts      Concept[]
+  expressions   Expression[]
+  sentences     Sentence[]
+  conversations Conversation[]
+  importJobs    ImportJob[]
+  mediaAssets   MediaAsset[]
+
+  @@index([checksum])
+}
+
+enum ImportJobStatus {
+  PENDING
+  MAPPING
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model ImportTemplate {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  mapping   Json
+  createdAt DateTime @default(now())
+}
+
+model ImportJob {
+  id          String          @id @default(cuid())
+  sourceId    String
+  source      Source          @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  status      ImportJobStatus @default(PENDING)
+  filename    String?
+  fileFormat  String? // xlsx | csv | txt | paste | manual
+  mapping     Json? // column mapping config
+  defaults    Json? // dialect/language/quality defaults chosen in the wizard
+  totalRows   Int             @default(0)
+  processedRows Int           @default(0) // durable progress counter, survives worker restarts
+  accepted    Int             @default(0)
+  matched     Int             @default(0)
+  semanticCandidates Int      @default(0) // rows routed through semantic matching evidence
+  conflicts   Int             @default(0)
+  duplicates  Int             @default(0)
+  errors      Int             @default(0)
+  errorLog    Json?
+  jobId       String?         // BullMQ job id, for correlating logs/retries
+  attempts    Int             @default(0)
+  createdById String?
+  createdBy   User?           @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime        @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  rows        ImportRow[]
+  reviewItems ReviewItem[]
+}
+
+enum ImportRowStatus {
+  PENDING
+  ACCEPTED
+  MATCHED
+  CONFLICT
+  ERROR
+  SKIPPED
+}
+
+model ImportRow {
+  id         String          @id @default(cuid())
+  jobId      String
+  job        ImportJob       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  rowIndex   Int
+  rawData    Json
+  status     ImportRowStatus @default(PENDING)
+  entityType String? // expression | sentence | ...
+  entityId   String?
+  message    String?
+  processedAt DateTime? // set once a row is durably resolved — makes reprocessing idempotent
+
+  @@unique([jobId, rowIndex])
+  @@index([jobId, status])
+  @@index([entityId])
+}
+
+// ---------- Review ----------
+
+enum ReviewItemType {
+  SEMANTIC_CONFLICT
+  DUPLICATE
+  DIALECT_UNCERTAIN
+  MEANING_UNCERTAIN
+  AI_SUGGESTION
+  SENTENCE_ALIGNMENT
+  RESPONSE_PATTERN
+  PRONUNCIATION
+  TRANSLATION
+}
+
+enum ReviewStatus {
+  PENDING
+  RESOLVED
+  DISMISSED
+}
+
+enum ReviewResolution {
+  APPROVED
+  ADDED_SYNONYM
+  ADDED_VARIANT
+  ADDED_DIALECT_EQUIVALENT
+  ADDED_TO_CONCEPT
+  CREATED_NEW_CONCEPT
+  DIFFERENT_MEANING
+  DIFFERENT_DIALECT
+  REPLACED
+  EDITED
+  REJECTED
+  DISMISSED
+}
+
+model ReviewItem {
+  id               String           @id @default(cuid())
+  type             ReviewItemType
+  status           ReviewStatus     @default(PENDING)
+  title            String
+  payload          Json // candidate data, matches, suggested actions
+  entityType       String?
+  entityId         String?
+  candidateEntityId String?
+  importJobId      String?
+  importJob        ImportJob?       @relation(fields: [importJobId], references: [id], onDelete: SetNull)
+  resolution       ReviewResolution?
+  resolutionNote   String?
+  resolvedById     String?
+  resolvedBy       User?            @relation("resolvedReviews", fields: [resolvedById], references: [id], onDelete: SetNull)
+  resolvedAt       DateTime?
+  createdAt        DateTime         @default(now())
+
+  @@index([status, type])
+  @@index([entityId])
+}
+
+// ---------- Collections ----------
+
+model Collection {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  items CollectionItem[]
+}
+
+model CollectionItem {
+  id           String     @id @default(cuid())
+  collectionId String
+  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  entityType   String // concept | expression | sentence | conversation | responsePattern
+  entityId     String
+  addedAt      DateTime   @default(now())
+
+  @@unique([collectionId, entityType, entityId])
+  @@index([entityType, entityId])
+}
+
+// ---------- Revisions & audit ----------
+
+enum RevisionKind {
+  CREATE
+  UPDATE
+  DELETE
+  RESTORE
+}
+
+model Revision {
+  id         String       @id @default(cuid())
+  entityType String
+  entityId   String
+  kind       RevisionKind
+  oldValue   Json?
+  newValue   Json?
+  reason     String?
+  userId     String?
+  user       User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt  DateTime     @default(now())
+
+  @@index([entityType, entityId])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String
+  detail    Json?
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+
+  @@index([action])
+}
+
+// ---------- Saved views ----------
+
+model SavedView {
+  id        String   @id @default(cuid())
+  name      String
+  viewKey   String // sentences | expressions | conversations | ...
+  filters   Json
+  shared    Boolean  @default(false)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, viewKey, name])
+}
+
+// ---------- Datasets ----------
+
+enum DatasetStatus {
+  DRAFT
+  BUILT
+  EXPORTED
+}
+
+model DatasetVersion {
+  id            String        @id @default(cuid())
+  name          String
+  version       Int           @default(1)
+  description   String?
+  filters       Json // full filter definition for reproducibility
+  splitStrategy Json // { train, validation, test, groupBy, seed }
+  counts        Json? // computed counts per split
+  exportSchema  String        @default("standard") // standard | lean
+  status        DatasetStatus @default(DRAFT)
+  createdById   String?
+  createdBy     User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime      @default(now())
+  builtAt       DateTime?
+
+  // Durable copies of exports, persisted to object storage (never only
+  // streamed to the requester) so a build's exports remain reproducible.
+  exports DatasetExport[]
+  records DatasetRecord[]
+
+  @@unique([name, version])
+}
+
+model DatasetExport {
+  id        String         @id @default(cuid())
+  datasetId String
+  dataset   DatasetVersion @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  format    String // jsonl | csv
+  split     String? // TRAIN | VALIDATION | TEST | null (all)
+  objectKey String
+  fileSize  Int?
+  checksum  String?
+  createdById String?
+  createdAt DateTime       @default(now())
+
+  @@index([datasetId])
+}
+
+enum DatasetSplit {
+  TRAIN
+  VALIDATION
+  TEST
+}
+
+model DatasetRecord {
+  id         String         @id @default(cuid())
+  datasetId  String
+  dataset    DatasetVersion @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  entityType String // sentence | conversation | responsePattern | expression
+  entityId   String
+  split      DatasetSplit
+  groupKey   String? // leakage-protection family key
+
+  @@unique([datasetId, entityType, entityId])
+  @@index([datasetId, split])
+}
+
+// ---------- AI enrichment ----------
+
+enum EnrichmentStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+model EnrichmentJob {
+  id         String           @id @default(cuid())
+  type       String // translate | classify | pronounce | suggest_responses | detect_dialect | qc | semantic_judgment | semantic_adjudication | embedding
+  status     EnrichmentStatus @default(PENDING)
+  provider   String
+  model      String?
+  entityType String
+  entityId   String
+  input      Json?
+  output     Json?
+  error      String?
+  attempts   Int              @default(0)
+  jobId      String? // queue job id, for correlating worker logs
+
+  // Cost-awareness: recorded when the provider reports usage. Never
+  // fabricated when unavailable (left null instead).
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+
+  createdAt  DateTime         @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+
+  @@index([status])
+  @@index([entityType, entityId])
+  @@index([type, createdAt])
+}
+
+// ---------- Vector embeddings (pgvector) ----------
+
+enum EmbeddingEntityType {
+  CONCEPT
+  SENTENCE
+  EXPRESSION
+}
+
+model Embedding {
+  id         String              @id @default(cuid())
+  entityType EmbeddingEntityType
+  entityId   String
+
+  provider   String // e.g. "openai"
+  model      String // e.g. "text-embedding-3-large"
+  dimensions Int
+
+  // Deterministic textual representation that was embedded, plus its hash.
+  // Regeneration is only triggered when the hash of a freshly-built
+  // representation differs from sourceHash (see src/services/ai/embeddings.ts).
+  sourceText String
+  sourceHash String
+
+  // pgvector column. Prisma has no native vector type, so it is declared
+  // via the Unsupported() escape hatch; all reads/writes/similarity
+  // queries against it go through $queryRaw/$executeRaw.
+  vector Unsupported("vector(3072)")
+
+  stale       Boolean  @default(false)
+  generatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([entityType, entityId])
+  @@index([entityType, stale])
+}
+
+// ---------- Settings ----------
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
+
+// ---------- Future media ----------
+
+model MediaAsset {
+  id        String   @id @default(cuid())
+  sourceId  String?
+  source    Source?  @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  kind      String // audio | video
+  uri       String
+  status    String   @default("PENDING")
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  segments MediaSegment[]
+}
+
+model MediaSegment {
+  id         String     @id @default(cuid())
+  assetId    String
+  asset      MediaAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  startMs    Int
+  endMs      Int
+  transcript String?
+  sentenceId String?
+  speaker    String?
+
+  @@index([assetId])
+}

@@ -1,0 +1,4 @@
+text,conceptKey,meaning,dialect,language,commonness,category,notes
+تسلم,GREETING_THANKS_REPLY,response to thanks,Najdi,ar,High,Conversation,
+يعطيك العافية,GREETING_THANKS_REPLY,response acknowledging effort,Najdi,ar,High,Conversation,
+والله ما قصرت,GREETING_THANKS_REPLY,you did great / no worries,Najdi,ar,Medium,Conversation,

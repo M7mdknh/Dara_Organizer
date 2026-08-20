@@ -1,0 +1,139 @@
+# Local development full stack: app + worker + postgres(pgvector) + redis + minio.
+#
+#   docker compose up --build
+#
+# Then, one-time (or after schema changes), from the host or via `docker
+# compose exec app sh`:
+#   docker compose exec app npx prisma migrate deploy
+#   docker compose exec app npm run db:seed
+#
+# The app is then available at http://localhost:3000, MinIO console at
+# http://localhost:9001 (dialect_minio / dialect_minio_secret).
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dialect
+      POSTGRES_PASSWORD: dialect_dev_password
+      POSTGRES_DB: dialect_platform
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dialect -d dialect_platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: dialect_minio
+      MINIO_ROOT_PASSWORD: dialect_minio_secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 dialect_minio dialect_minio_secret &&
+      mc mb -p local/dialect-platform || true
+      "
+
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      APP_URL: http://localhost:3000
+      SESSION_SECRET: dev_session_secret_change_me_at_least_32_chars_long
+      DATABASE_URL: postgresql://dialect:dialect_dev_password@postgres:5432/dialect_platform
+      REDIS_URL: redis://redis:6379
+      BACKGROUND_JOBS_ENABLED: "true"
+      STORAGE_PROVIDER: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: dialect-platform
+      S3_ACCESS_KEY_ID: dialect_minio
+      S3_SECRET_ACCESS_KEY: dialect_minio_secret
+      S3_FORCE_PATH_STYLE: "true"
+      AI_PROVIDER: none
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  worker:
+    build:
+      context: .
+      target: worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      SESSION_SECRET: dev_session_secret_change_me_at_least_32_chars_long
+      DATABASE_URL: postgresql://dialect:dialect_dev_password@postgres:5432/dialect_platform
+      REDIS_URL: redis://redis:6379
+      BACKGROUND_JOBS_ENABLED: "true"
+      WORKER_CONCURRENCY: "4"
+      STORAGE_PROVIDER: s3
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_BUCKET: dialect-platform
+      S3_ACCESS_KEY_ID: dialect_minio
+      S3_SECRET_ACCESS_KEY: dialect_minio_secret
+      S3_FORCE_PATH_STYLE: "true"
+      AI_PROVIDER: none
+
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
