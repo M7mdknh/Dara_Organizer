@@ -1,0 +1,21 @@
+# syntax=docker/dockerfile:1
+#
+# Self-contained worker-service image — see Dockerfile.web for why this is
+# split from the shared multi-stage `Dockerfile` (Railway's
+# RAILWAY_DOCKERFILE_PATH selects a file, not a build stage).
+
+FROM node:22-alpine AS deps
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:22-alpine AS worker
+WORKDIR /app
+RUN apk add --no-cache openssl
+ENV NODE_ENV=production
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npx prisma generate
+USER node
+CMD ["npx", "tsx", "src/worker/index.ts"]
