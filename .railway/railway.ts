@@ -1,4 +1,4 @@
-import { defineRailway, github, project, service } from "railway/iac";
+import { defineRailway, github, preserve, project, service } from "railway/iac";
 
 /**
  * Declarative Railway infrastructure for the Dara Organizer (Arabic Dialect
@@ -36,14 +36,24 @@ export default defineRailway(() => {
 
     DATABASE_URL: required("DATABASE_URL"),
 
-    AI_PROVIDER: process.env.AI_PROVIDER || "openai",
+    // Hardcoded (not a `process.env.AI_PROVIDER || "openai"` fallback):
+    // production is decided to run with the OpenAI provider, and a
+    // fallback pattern silently regresses to whatever happens to be in the
+    // operator's local shell (e.g. AI_PROVIDER=none for local dev cost
+    // reasons) the next time `config apply` runs. Not a secret — safe to
+    // hardcode. Override via `railway variable set AI_PROVIDER=...` for a
+    // one-off change without editing this file.
+    AI_PROVIDER: "openai",
     OPENAI_API_KEY: required("OPENAI_API_KEY"),
     OPENAI_MODEL: process.env.OPENAI_MODEL || "gpt-5.6-terra",
     OPENAI_ADJUDICATION_MODEL: process.env.OPENAI_ADJUDICATION_MODEL || "gpt-5.6-sol",
     OPENAI_EMBEDDING_MODEL: process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-large",
     OPENAI_EMBEDDING_DIMENSIONS: process.env.OPENAI_EMBEDDING_DIMENSIONS || "3072",
 
-    SEMANTIC_MATCHING_ENABLED: process.env.SEMANTIC_MATCHING_ENABLED || "true",
+    // Same reasoning as AI_PROVIDER above — hardcoded so a local dev
+    // shell's SEMANTIC_MATCHING_ENABLED=false can't silently disable this
+    // in production on the next `config apply`.
+    SEMANTIC_MATCHING_ENABLED: "true",
     SEMANTIC_TOP_K: process.env.SEMANTIC_TOP_K || "10",
     SEMANTIC_VECTOR_MIN_SIMILARITY: process.env.SEMANTIC_VECTOR_MIN_SIMILARITY || "0.65",
     SEMANTIC_AUTO_APPROVE: "false",
@@ -83,10 +93,12 @@ export default defineRailway(() => {
     env: {
       ...sharedEnv,
       RAILWAY_DOCKERFILE_PATH: "Dockerfile.web",
-      // Set to the real Railway public domain after the first deploy
-      // (see README "Railway deployment" — `railway domain` then update
-      // this and redeploy, or set APP_URL directly via `railway variable set`).
-      APP_URL: process.env.RAILWAY_WEB_APP_URL || "https://REPLACE_WITH_RAILWAY_DOMAIN",
+      // Set once via `railway domain` + `railway variable set APP_URL=...`
+      // after the first deploy (see README "Railway deployment"). preserve()
+      // keeps that value stable across future `config apply` runs instead
+      // of resetting it — this file has no way to know the assigned
+      // *.up.railway.app domain in advance.
+      APP_URL: preserve(),
     },
   });
 
