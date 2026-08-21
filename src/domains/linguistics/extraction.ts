@@ -32,6 +32,10 @@ type Tx = Prisma.TransactionClient | PrismaClient;
 
 const ExtractionSchema = z.object({
   msaEquivalent: z.string().nullable(),
+  englishMeaning: z.string().nullable(),
+  intent: z.string().nullable(),
+  register: z.enum(["Formal", "Casual", "Intimate", "Neutral"]).nullable(),
+  naturalness: z.enum(["NATURAL", "ACCEPTABLE", "UNNATURAL", "UNKNOWN"]),
   items: z
     .array(
       z.object({
@@ -53,6 +57,17 @@ const EXTRACTION_JSON_SCHEMA = {
     additionalProperties: false,
     properties: {
       msaEquivalent: { type: ["string", "null"], description: "Natural Modern Standard Arabic rendering of the whole sentence's meaning, or null if the sentence is not Arabic." },
+      englishMeaning: { type: ["string", "null"], description: "A natural, concise English equivalent of the whole sentence's meaning (not a literal word-for-word gloss)." },
+      intent: {
+        type: ["string", "null"],
+        description: "Conversational intent as an UPPER_SNAKE_CASE label, e.g. ASK_WELLBEING, PRAISE, ASK_LOCATION, APPRECIATION, STATEMENT. Null if no clear conversational intent applies (e.g. narrative/descriptive text).",
+      },
+      register: { type: ["string", "null"], enum: ["Formal", "Casual", "Intimate", "Neutral", null], description: "Null only if genuinely not determinable." },
+      naturalness: {
+        type: "string",
+        enum: ["NATURAL", "ACCEPTABLE", "UNNATURAL", "UNKNOWN"],
+        description: "Does this read like real natural spoken dialect (not machine-translated or MSA-contaminated)? UNKNOWN if you can't tell.",
+      },
       items: {
         type: "array",
         maxItems: 10,
@@ -82,7 +97,7 @@ const EXTRACTION_JSON_SCHEMA = {
         },
       },
     },
-    required: ["msaEquivalent", "items", "translations"],
+    required: ["msaEquivalent", "englishMeaning", "intent", "register", "naturalness", "items", "translations"],
   },
 };
 
@@ -107,7 +122,8 @@ function buildPrompt(params: {
     "",
     "Extract only linguistically meaningful units (words, conventional phrases, idioms) that are useful vocabulary — skip meaningless fragments and pure grammatical particles unless they carry real dialectal/conversational value. Avoid tokenizing a fixed phrase into separate meaningless words when the phrase itself carries the meaning.",
     `Also provide natural (not word-for-word literal) translations into: ${params.enabledLanguageNames.join(", ")}.`,
-    "Never fabricate confidence — if the sentence is too short/unclear for a given field, use null or an empty array.",
+    "Also assess: a concise natural English meaning of the whole sentence, its conversational intent (if any), register, and naturalness.",
+    "Never fabricate confidence — if the sentence is too short/unclear for a given field, use null (or UNKNOWN for naturalness, or an empty array for lists).",
   ].join("\n");
 }
 
@@ -128,6 +144,25 @@ async function uniqueConceptKey(tx: Tx, gloss: string): Promise<string> {
     key = `${base}_${n}`;
   }
   return key;
+}
+
+/** Case-insensitive reuse-before-create for simple name-keyed taxonomies (Intent, Register) — conservative, avoids creating near-duplicate labels for every sentence. */
+async function resolveIntent(tx: Tx, name: string | null): Promise<string | null> {
+  if (!name?.trim()) return null;
+  const label = name.trim().toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (!label) return null;
+  const existing = await tx.intent.findFirst({ where: { name: { equals: label, mode: "insensitive" } } });
+  if (existing) return existing.id;
+  const created = await tx.intent.create({ data: { name: label } });
+  return created.id;
+}
+
+async function resolveRegister(tx: Tx, name: string | null): Promise<string | null> {
+  if (!name?.trim()) return null;
+  const existing = await tx.register.findFirst({ where: { name: { equals: name.trim(), mode: "insensitive" } } });
+  if (existing) return existing.id;
+  const created = await tx.register.create({ data: { name: name.trim() } });
+  return created.id;
 }
 
 /** Finds a matching expression (exact/normalized) or creates one; returns null when the row conflicts (routed to review instead, never silently duplicated). */
@@ -172,17 +207,22 @@ async function findOrCreateExpression(
   return created.id;
 }
 
-export async function extractLinguisticKnowledge(sentenceId: string): Promise<{ status: "completed" | "skipped" | "no_provider" }> {
+export async function extractLinguisticKnowledge(
+  sentenceId: string,
+  opts: { force?: boolean } = {},
+): Promise<{ status: "completed" | "skipped" | "no_provider" }> {
   const sentence = await db.sentence.findUnique({
     where: { id: sentenceId },
     include: { dialect: true, language: true },
   });
   if (!sentence) return { status: "skipped" };
 
-  const already = await db.enrichmentJob.findFirst({
-    where: { type: "extract_linguistics", entityType: "sentence", entityId: sentenceId, status: "COMPLETED" },
-  });
-  if (already) return { status: "skipped" };
+  if (!opts.force) {
+    const already = await db.enrichmentJob.findFirst({
+      where: { type: "extract_linguistics", entityType: "sentence", entityId: sentenceId, status: "COMPLETED" },
+    });
+    if (already) return { status: "skipped" };
+  }
 
   const provider = await resolveProvider();
   if (!provider) return { status: "no_provider" };
@@ -248,6 +288,20 @@ export async function extractLinguisticKnowledge(sentenceId: string): Promise<{ 
     );
 
     await db.$transaction(async (tx) => {
+      // Populate blank sentence-level fields with AI enrichment — never
+      // overwrites a value that's already set (e.g. by a human edit, or a
+      // prior enrichment run), so this is purely additive.
+      const intentId = data.intent ? await resolveIntent(tx, data.intent) : null;
+      const registerId = data.register ? await resolveRegister(tx, data.register) : null;
+      const sentenceUpdate: Prisma.SentenceUpdateInput = {};
+      if (!sentence.meaning && data.englishMeaning) sentenceUpdate.meaning = data.englishMeaning;
+      if (!sentence.intentId && intentId) sentenceUpdate.intent = { connect: { id: intentId } };
+      if (!sentence.registerId && registerId) sentenceUpdate.register = { connect: { id: registerId } };
+      if (sentence.naturalness === "UNKNOWN" && data.naturalness !== "UNKNOWN") sentenceUpdate.naturalness = data.naturalness;
+      if (Object.keys(sentenceUpdate).length > 0) {
+        await tx.sentence.update({ where: { id: sentence.id }, data: sentenceUpdate });
+      }
+
       let primaryConceptId: string | null = null;
 
       for (const { item, evidence } of itemsWithEvidence) {

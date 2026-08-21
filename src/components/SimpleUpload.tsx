@@ -97,12 +97,6 @@ export function SimpleUpload({
     }
   }
 
-  function updatePlan(id: string, patch: Partial<ImportAnalysis>) {
-    setPlans((prev) =>
-      prev.map((p) => (p.id === id && p.analysis ? { ...p, analysis: { ...p.analysis, ...patch } } : p)),
-    );
-  }
-
   function updateDefaults(id: string, patch: Partial<ImportAnalysis["defaults"]>) {
     setPlans((prev) =>
       prev.map((p) =>
@@ -222,17 +216,7 @@ export function SimpleUpload({
               {plan.analysis && (
                 <div className="space-y-3">
                   <p className="text-sm text-muted">{plan.analysis.summary}</p>
-                  <div className="grid grid-cols-3 gap-3">
-                    <Field label="Import as">
-                      <Select
-                        className="w-full"
-                        value={plan.analysis.target}
-                        onChange={(e) => updatePlan(plan.id, { target: e.target.value as "expression" | "sentence" })}
-                      >
-                        <option value="sentence">Sentences</option>
-                        <option value="expression">Words &amp; expressions</option>
-                      </Select>
-                    </Field>
+                  <div className="grid grid-cols-2 gap-3">
                     <Field label="Language">
                       <Select
                         className="w-full"
