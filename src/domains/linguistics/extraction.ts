@@ -302,8 +302,6 @@ export async function extractLinguisticKnowledge(
         await tx.sentence.update({ where: { id: sentence.id }, data: sentenceUpdate });
       }
 
-      let primaryConceptId: string | null = null;
-
       for (const { item, evidence } of itemsWithEvidence) {
         const text = item.text;
 
@@ -334,7 +332,6 @@ export async function extractLinguisticKnowledge(
           continue;
         }
         if (!conceptId) continue;
-        if (!primaryConceptId) primaryConceptId = conceptId;
 
         const exprId = await findOrCreateExpression(tx, {
           text,
@@ -386,59 +383,49 @@ export async function extractLinguisticKnowledge(
         }
       }
 
-      // Sentence-level translations attach to the sentence's primary
-      // extracted concept (a sentence may express more than one concept;
-      // the first one extracted is treated as primary — a documented
-      // simplification, not a hard modeling constraint).
-      if (primaryConceptId) {
-        for (const t of data.translations) {
-          const lang = translationTargets.find((l) => l.code === t.languageCode);
-          const text = t.text.trim();
-          if (!lang || !text) continue;
-          const exprId = await findOrCreateExpression(tx, {
-            text,
-            languageId: lang.id,
-            dialectId: null,
-            type: "EXPRESSION" as never,
-            sourceId: sentence.sourceId,
-            conceptId: primaryConceptId,
-            provider,
-          });
-          if (!exprId) continue;
-          await tx.conceptExpression.upsert({
-            where: { conceptId_expressionId: { conceptId: primaryConceptId, expressionId: exprId } },
-            update: {},
-            create: { conceptId: primaryConceptId, expressionId: exprId, isPrimary: false },
-          });
-        }
+      // Equivalent-utterance grouping: whole-sentence meaning equivalents
+      // (MSA + every enabled translation language) are sentence-level
+      // realizations of the same UTTERANCE MEANING, not attributes of some
+      // arbitrary lexical Concept — a whole-sentence English gloss must
+      // never end up as the "translation" of a single extracted word.
+      // Each equivalent becomes its own companion Sentence in the same
+      // UtteranceGroup, exactly like the dialect original, so "equivalent
+      // utterances are preferred over literal translations" (CLAUDE.md rule
+      // 7) stays a queryable structure, not a string field.
+      const equivalents: { languageId: string; text: string }[] = [];
+      if (data.msaEquivalent && msaLanguage && sentence.language.code !== "ar-MSA") {
+        equivalents.push({ languageId: msaLanguage.id, text: data.msaEquivalent });
+      }
+      for (const t of data.translations) {
+        const lang = translationTargets.find((l) => l.code === t.languageCode);
+        const text = t.text.trim();
+        if (lang && text) equivalents.push({ languageId: lang.id, text });
       }
 
-      // Equivalent-utterance grouping: link this sentence and its MSA
-      // rendering into the same UtteranceGroup so "equivalent utterances
-      // are preferred over literal translations" (CLAUDE.md rule 7) is a
-      // queryable structure, not just prose.
-      if (data.msaEquivalent && msaLanguage && sentence.language.code !== "ar-MSA") {
+      if (equivalents.length > 0) {
         let groupId = sentence.utteranceGroupId;
         if (!groupId) {
-          const group = await tx.utteranceGroup.create({ data: { name: data.msaEquivalent.slice(0, 120) } });
+          const group = await tx.utteranceGroup.create({ data: { name: (data.msaEquivalent ?? data.englishMeaning ?? sentence.textOriginal).slice(0, 120) } });
           groupId = group.id;
           await tx.sentence.update({ where: { id: sentence.id }, data: { utteranceGroupId: groupId } });
         }
-        const sentenceMatch = await tx.sentence.findFirst({
-          where: { textNormalized: normalizeArabic(data.msaEquivalent), languageId: msaLanguage.id },
-          select: { id: true, utteranceGroupId: true },
-        });
-        if (sentenceMatch) {
-          if (!sentenceMatch.utteranceGroupId) {
-            await tx.sentence.update({ where: { id: sentenceMatch.id }, data: { utteranceGroupId: groupId } });
+        for (const eq of equivalents) {
+          const sentenceMatch = await tx.sentence.findFirst({
+            where: { textNormalized: normalizeArabic(eq.text), languageId: eq.languageId },
+            select: { id: true, utteranceGroupId: true },
+          });
+          if (sentenceMatch) {
+            if (!sentenceMatch.utteranceGroupId) {
+              await tx.sentence.update({ where: { id: sentenceMatch.id }, data: { utteranceGroupId: groupId } });
+            }
+            continue;
           }
-        } else {
-          const msaSentence = await tx.sentence.create({
+          const equivSentence = await tx.sentence.create({
             data: {
-              textOriginal: data.msaEquivalent,
-              textNormalized: normalizeArabic(data.msaEquivalent),
-              languageId: msaLanguage.id,
-              meaning: sentence.meaning,
+              textOriginal: eq.text,
+              textNormalized: normalizeArabic(eq.text),
+              languageId: eq.languageId,
+              meaning: eq.languageId === msaLanguage?.id ? sentence.meaning : null,
               utteranceGroupId: groupId,
               quality: "SILVER",
               verification: "UNVERIFIED",
@@ -449,7 +436,7 @@ export async function extractLinguisticKnowledge(
               sourceId: sentence.sourceId,
             },
           });
-          await recordRevision(tx, { entityType: "sentence", entityId: msaSentence.id, kind: "CREATE", newValue: msaSentence, reason: "AI linguistic extraction (MSA equivalent)" });
+          await recordRevision(tx, { entityType: "sentence", entityId: equivSentence.id, kind: "CREATE", newValue: equivSentence, reason: "AI linguistic extraction (equivalent utterance)" });
         }
       }
     }, { timeout: 120_000 });
