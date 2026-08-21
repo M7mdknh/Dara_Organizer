@@ -10,6 +10,7 @@ import { processGenerateEmbeddings } from "@/worker/processors/generateEmbedding
 import { processAiEnrich } from "@/worker/processors/aiEnrich";
 import { processSemanticAdjudication } from "@/worker/processors/semanticAdjudication";
 import { processDatasetExport } from "@/worker/processors/datasetExport";
+import { processLanguageEnrichment } from "@/worker/processors/languageEnrichment";
 
 /**
  * Dedicated background worker process. Run separately from the Next.js app
@@ -38,6 +39,7 @@ const PROCESSORS: Record<string, (job: Job) => Promise<unknown>> = {
   [JOB_TYPES.AI_ENRICH]: processAiEnrich,
   [JOB_TYPES.SEMANTIC_ADJUDICATION]: processSemanticAdjudication,
   [JOB_TYPES.DATASET_EXPORT]: processDatasetExport,
+  [JOB_TYPES.LANGUAGE_ENRICHMENT]: processLanguageEnrichment,
 };
 
 const workers = Object.entries(PROCESSORS).map(([name, processor]) => {

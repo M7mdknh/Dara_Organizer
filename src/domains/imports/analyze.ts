@@ -1,6 +1,7 @@
 import { db } from "@/lib/db";
 import { containsArabic } from "@/services/normalization";
 import type { ImportMapping } from "@/domains/imports/service";
+import { analyzeDocumentWithAi, type DocumentAnalysis } from "@/services/ai/document-understanding";
 
 /**
  * Deterministic, content-based analysis of an already-uploaded import job's
@@ -28,7 +29,75 @@ export interface ImportAnalysis {
     dialectMatches: { name: string; dialectId: string; count: number }[];
     languageGuess: { code: string; languageId: string } | null;
     avgWordsPerRow: number;
+    metadataColumns: string[];
+    textColumnOverridden: boolean;
   };
+  /** Present only when an AI provider is configured and returned a usable structured analysis. */
+  aiInsight: {
+    documentType: DocumentAnalysis["documentType"];
+    primaryDialectGuess: string | null;
+    contains: DocumentAnalysis["contains"];
+    reasoning: string | null;
+  } | null;
+}
+
+// Values that look like timestamps, durations, sequence numbers, row IDs, or
+// other non-linguistic metadata. Matched case-insensitively against a
+// trimmed cell value in isolation — a value that "is" one of these patterns
+// (not merely contains digits) is metadata, never linguistic text. This is
+// the deterministic guard against bugs like "0s" / "00:01:35" / row indices
+// being imported as sentence text — it runs regardless of AI availability.
+const METADATA_VALUE_PATTERNS: RegExp[] = [
+  /^\d+(\.\d+)?\s*(ms|s|sec|secs|m|min|mins|h|hr|hrs)$/i, // "0s", "6s", "1.5s", "12min"
+  /^\d{1,2}:\d{2}(:\d{2})?([.,]\d{1,3})?$/, // "01:24", "00:01:35", "00:01:35,120"
+  /^\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}\s*-->\s*\d{1,2}:\d{2}:\d{2}[.,]\d{1,3}$/, // SRT/VTT cue range
+  /^#?\d+$/, // "1", "#42" — bare sequence number / row id
+  /^\[\d+\]$/, // "[12]"
+  /^r?\d{1,3}$/i, // "r12" row-style ids (short, avoids false-positives on longer alnum)
+];
+
+/** True when a single cell value is metadata (timestamp/sequence/id), not linguistic content. */
+export function isMetadataValue(v: string): boolean {
+  const t = v.trim();
+  if (!t) return false;
+  return METADATA_VALUE_PATTERNS.some((re) => re.test(t));
+}
+
+export interface ColumnStats {
+  column: string;
+  nonEmptyCount: number;
+  metadataRatio: number;
+  isMetadataLike: boolean;
+  arabicRatio: number;
+  avgWordCount: number;
+  avgCharLength: number;
+}
+
+/** Scores every column by its actual sampled VALUES (not header name) so a mislabeled or unlabeled metadata column can never be chosen as linguistic text. */
+export function classifyColumns(columns: string[], rows: Record<string, string>[]): Map<string, ColumnStats> {
+  const sampleRows = rows.slice(0, 300);
+  const stats = new Map<string, ColumnStats>();
+  for (const col of columns) {
+    const values = sampleRows.map((r) => (r[col] ?? "").trim()).filter(Boolean);
+    const metaCount = values.filter(isMetadataValue).length;
+    const metadataRatio = values.length ? metaCount / values.length : 0;
+    const arabicCount = values.filter(containsArabic).length;
+    const totalWords = values.reduce((s, v) => s + v.split(/\s+/).filter(Boolean).length, 0);
+    const totalChars = values.reduce((s, v) => s + v.length, 0);
+    stats.set(col, {
+      column: col,
+      nonEmptyCount: values.length,
+      metadataRatio,
+      // A column is metadata-like when most of its non-empty sampled values
+      // match a metadata pattern. Threshold >0.6 tolerates a few stray
+      // blanks/outliers without misclassifying genuinely short text columns.
+      isMetadataLike: values.length > 0 && metadataRatio > 0.6,
+      arabicRatio: values.length ? arabicCount / values.length : 0,
+      avgWordCount: values.length ? totalWords / values.length : 0,
+      avgCharLength: values.length ? totalChars / values.length : 0,
+    });
+  }
+  return stats;
 }
 
 const FIELD_KEYWORDS: Record<string, string[]> = {
@@ -45,10 +114,11 @@ const FIELD_KEYWORDS: Record<string, string[]> = {
   register: ["register", "formality"],
   notes: ["note", "comment"],
   utteranceGroup: ["group", "cluster"],
+  speaker: ["speaker", "who"],
 };
 
 const EXPRESSION_KEYS = ["text", "conceptKey", "meaning", "dialect", "language", "register", "pronunciation", "ipa", "category", "notes"];
-const SENTENCE_KEYS = ["text", "meaning", "dialect", "language", "utteranceGroup", "intent", "situation", "register", "category", "pronunciation", "notes"];
+const SENTENCE_KEYS = ["text", "meaning", "dialect", "language", "utteranceGroup", "intent", "situation", "register", "category", "pronunciation", "notes", "speaker"];
 
 function normCol(s: string): string {
   return s.toLowerCase().replace(/[^a-z]/g, "");
@@ -68,17 +138,58 @@ export function guessColumnMapping(columns: string[], target: "expression" | "se
   return guess;
 }
 
-export async function analyzeRows(columns: string[], rows: Record<string, string>[]): Promise<ImportAnalysis> {
-  const prelimMapping = guessColumnMapping(columns, "sentence");
-  const textCol = prelimMapping.text ?? columns[0] ?? "";
+/**
+ * Richest non-metadata column by actual content — the fallback used when no
+ * header keyword matches, and the override used when a header keyword DOES
+ * match but points at a column whose values are metadata (e.g. a column
+ * literally named "text" that actually contains timestamps).
+ *
+ * Arabic-script content is preferred over raw word/char count: an English
+ * reference translation is often longer than the terse Arabic original it
+ * translates (e.g. a short dialect sentence vs. a verbose English gloss), so
+ * ranking by length alone would pick the translation as the "original" text.
+ * This platform's original text is Arabic-first; when any candidate column
+ * is substantially Arabic, it outranks non-Arabic ones regardless of length.
+ */
+export function pickRichestColumn(linguisticColumns: string[], columnStats: Map<string, ColumnStats>): string | undefined {
+  return [...linguisticColumns]
+    .map((c) => columnStats.get(c)!)
+    .sort(
+      (a, b) =>
+        (b.arabicRatio > 0.3 ? 1 : 0) - (a.arabicRatio > 0.3 ? 1 : 0) ||
+        b.avgWordCount - a.avgWordCount ||
+        b.avgCharLength - a.avgCharLength,
+    )[0]?.column;
+}
+
+export async function analyzeRows(
+  columns: string[],
+  rows: Record<string, string>[],
+  extraMetadataColumns: string[] = [],
+): Promise<ImportAnalysis> {
+  const columnStats = classifyColumns(columns, rows);
+  const extraMetadataSet = new Set(extraMetadataColumns);
+  const metadataColumns = columns.filter((c) => columnStats.get(c)?.isMetadataLike || extraMetadataSet.has(c));
+  const linguisticColumns = columns.filter((c) => !metadataColumns.includes(c));
+
+  const richestColumn = pickRichestColumn(linguisticColumns, columnStats);
+
+  const prelimMapping = guessColumnMapping(linguisticColumns, "sentence");
+  let textCol = prelimMapping.text ?? richestColumn ?? columns[0] ?? "";
+  let textColumnOverridden = false;
+  if ((columnStats.get(textCol)?.isMetadataLike || extraMetadataSet.has(textCol)) && richestColumn) {
+    textCol = richestColumn;
+    textColumnOverridden = true;
+  }
+
   const sample = rows.slice(0, 300).map((r) => (r[textCol] ?? "").trim()).filter(Boolean);
   const avgWords = sample.length
     ? sample.reduce((s, t) => s + t.split(/\s+/).filter(Boolean).length, 0) / sample.length
     : 0;
   const target: "expression" | "sentence" = avgWords > 0 && avgWords <= 2.5 ? "expression" : "sentence";
 
-  const columnMapping = guessColumnMapping(columns, target);
-  if (!columnMapping.text) columnMapping.text = textCol;
+  const columnMapping = guessColumnMapping(linguisticColumns, target);
+  columnMapping.text = textCol;
 
   const arabicCount = sample.filter(containsArabic).length;
   const scriptsSeen: ("arabic" | "latin")[] = [];
@@ -142,6 +253,12 @@ export async function analyzeRows(columns: string[], rows: Record<string, string
     parts.push(`a dialect column ("${dialectCol}") was found but its values didn't match any known dialect — pick a default below`);
   }
   if (languageGuess) parts.push(`language: ${languageGuess.code}`);
+  if (metadataColumns.length) {
+    parts.push(`ignored as metadata (not linguistic text): ${metadataColumns.join(", ")}`);
+  }
+  if (textColumnOverridden) {
+    parts.push(`note: the column that looked like the text column actually contained timestamps/IDs, so "${textCol}" was used instead`);
+  }
 
   return {
     target,
@@ -160,8 +277,69 @@ export async function analyzeRows(columns: string[], rows: Record<string, string
       dialectMatches: dialectMatches.map((d) => ({ name: d.name, dialectId: d.dialectId, count: d.count })),
       languageGuess,
       avgWordsPerRow: Math.round(avgWords * 10) / 10,
+      metadataColumns,
+      textColumnOverridden,
     },
+    aiInsight: null,
   };
+}
+
+/**
+ * AI-augmented analysis: runs the deterministic analyzeRows guard first,
+ * then (only if an AI provider is configured) asks the document-
+ * understanding model for a second opinion on column roles and merges any
+ * additional metadata columns it identifies (e.g. a speaker-label column
+ * that isn't a pure number/timestamp so the deterministic regex guard
+ * doesn't catch it). The deterministic guard's own metadata findings are
+ * never removed by AI disagreement — AI can only ADD exclusions, never
+ * un-exclude a column the deterministic guard already proved is metadata.
+ */
+export async function analyzeImportJobWithAi(
+  columns: string[],
+  rows: Record<string, string>[],
+  filename: string,
+): Promise<ImportAnalysis> {
+  const baseline = await analyzeRows(columns, rows);
+
+  const aiInsight = await analyzeDocumentWithAi({
+    filename,
+    columns,
+    sampleRows: rows.slice(0, 15),
+    metadataColumnsAlreadyDetected: baseline.detected.metadataColumns,
+  });
+  if (!aiInsight) return baseline;
+
+  const aiMetadataColumns = aiInsight.columns
+    .filter((c) => !c.importAsLinguisticText && ["timestamp", "sequence_id", "speaker", "other_metadata"].includes(c.role))
+    .map((c) => c.column);
+
+  const merged = await analyzeRows(columns, rows, aiMetadataColumns);
+  merged.aiInsight = {
+    documentType: aiInsight.documentType,
+    primaryDialectGuess: aiInsight.primaryDialectGuess,
+    contains: aiInsight.contains,
+    reasoning: aiInsight.reasoning,
+  };
+  if (aiInsight.reasoning) {
+    merged.summary += ` AI notes: ${aiInsight.reasoning}`;
+  }
+
+  // Only used as a fallback when deterministic dialect-column matching found
+  // nothing (e.g. no dialect column at all, or the file simply doesn't have
+  // one) — never overrides an actual deterministic dialect match.
+  if (!merged.defaults.dialectId && aiInsight.primaryDialectGuess) {
+    const guess = aiInsight.primaryDialectGuess.trim().toLowerCase();
+    const dialects = await db.dialectNode.findMany();
+    const match = dialects.find(
+      (d) => d.name.toLowerCase() === guess || d.slug === guess.replace(/\s+/g, "-") || d.nameAr === aiInsight.primaryDialectGuess,
+    );
+    if (match) {
+      merged.defaults.dialectId = match.id;
+      merged.summary += ` AI-suggested dialect: ${match.name} (unconfirmed by column data — verify before importing).`;
+    }
+  }
+
+  return merged;
 }
 
 /** Throws if languageId couldn't be auto-detected — the caller must ask the user to pick one. */

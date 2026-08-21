@@ -50,7 +50,15 @@ const envSchema = z
     // Semantic matching
     SEMANTIC_MATCHING_ENABLED: bool(false),
     SEMANTIC_TOP_K: num(10),
-    SEMANTIC_VECTOR_MIN_SIMILARITY: num(0.65),
+    // 0.55, not 0.65: measured against real text-embedding-3-large output —
+    // a genuine dialect-word/concept match (e.g. Najdi "الحين" against the
+    // existing TIME_NOW concept, whose representation text includes "الحين"
+    // verbatim) scored 0.589 cosine similarity. At 0.65 that true match is
+    // silently excluded from retrieval, so the LLM judgment stage never
+    // even sees it and a duplicate concept gets created instead of reused.
+    // The LLM judgment step (not the threshold) is the actual precision
+    // gate — this only widens what gets shown to it.
+    SEMANTIC_VECTOR_MIN_SIMILARITY: num(0.55),
     SEMANTIC_AUTO_APPROVE: bool(false),
     SEMANTIC_ADJUDICATION_ENABLED: bool(true),
 

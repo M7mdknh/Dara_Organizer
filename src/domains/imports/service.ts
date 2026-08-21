@@ -7,6 +7,10 @@ import { matchExpression, matchSentence } from "@/services/matching";
 import { recordRevision } from "@/services/revisions";
 import { judgeExpressionAgainstConcepts } from "@/services/matching/semantic";
 import { logger } from "@/lib/logger";
+import { resolveProvider } from "@/services/ai/enrichment";
+import { extractLinguisticKnowledge } from "@/domains/linguistics/extraction";
+import { enqueueOrRun, JOB_TYPES } from "@/lib/queue";
+import { buildConversationFromSpeakerRows } from "@/domains/imports/conversation-extraction";
 
 /**
  * Import processing: every mapped row goes through the matching engine.
@@ -54,6 +58,7 @@ export const SENTENCE_FIELDS = [
   { key: "category", label: "Category" },
   { key: "pronunciation", label: "Pronunciation (Arabic phonetic)" },
   { key: "notes", label: "Notes" },
+  { key: "speaker", label: "Speaker (for dialogue/conversation detection)" },
 ] as const;
 
 const COMMONNESS_MAP: Record<string, string> = {
@@ -261,7 +266,7 @@ export async function processImportJob(jobId: string, userId: string) {
     }
   }
 
-  return db.importJob.update({
+  const finished = await db.importJob.update({
     where: { id: jobId },
     data: {
       status: "COMPLETED",
@@ -276,6 +281,45 @@ export async function processImportJob(jobId: string, userId: string) {
       finishedAt: new Date(),
     },
   });
+
+  if (mapping.target === "sentence") {
+    await enqueueSentenceExtraction(jobId);
+    await buildConversationFromSpeakerRows(jobId, mapping).catch((err) => {
+      logger.error("conversation_extraction.failed", { jobId, error: err instanceof Error ? err.message : String(err) });
+    });
+  }
+
+  return finished;
+}
+
+/**
+ * Queues deep linguistic extraction (concepts/expressions/MSA/translations,
+ * see src/domains/linguistics/extraction.ts) for every sentence this import
+ * accepted or matched — skipped entirely when no AI provider is configured
+ * so imports never silently hang waiting on AI. One job per sentence, so
+ * partial failures don't block the rest; each is independently idempotent.
+ */
+async function enqueueSentenceExtraction(jobId: string): Promise<void> {
+  const provider = await resolveProvider();
+  if (!provider) return;
+
+  const sentenceRows = await db.importRow.findMany({
+    where: { jobId, entityType: "sentence", status: { in: ["ACCEPTED", "MATCHED"] }, entityId: { not: null } },
+    select: { entityId: true },
+    distinct: ["entityId"],
+  });
+
+  for (const row of sentenceRows) {
+    if (!row.entityId) continue;
+    const entityId = row.entityId;
+    await enqueueOrRun(
+      JOB_TYPES.AI_ENRICH,
+      { type: "extract_linguistics", entityType: "sentence", entityId },
+      () => extractLinguisticKnowledge(entityId),
+    ).catch((err) => {
+      logger.error("linguistic_extraction.enqueue_failed", { entityId, error: err instanceof Error ? err.message : String(err) });
+    });
+  }
 }
 
 interface RowCtx {

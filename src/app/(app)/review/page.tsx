@@ -107,7 +107,15 @@ export default function ReviewInboxPage() {
           </p>
           <div className="space-y-3">
             {ordered.map((item) =>
-              item.payload.semanticEvidence ? (
+              item.type === "RESPONSE_PATTERN" ? (
+                <ResponsePatternCard
+                  key={item.id}
+                  item={item}
+                  isActive={item.id === activeId}
+                  onResolved={refetch}
+                  onSkip={() => skip(item.id)}
+                />
+              ) : item.payload.semanticEvidence ? (
                 <SemanticCandidateCard
                   key={item.id}
                   item={item}
@@ -166,6 +174,65 @@ function useReviewShortcuts(isActive: boolean, handlers: { same: () => void; dif
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isActive]);
+}
+
+/** Plain-language card for a proposed trigger/response pair detected from speaker-labeled dialogue rows (see conversation-extraction.ts). */
+function ResponsePatternCard({
+  item,
+  isActive,
+  onResolved,
+  onSkip,
+}: {
+  item: ReviewItem;
+  isActive: boolean;
+  onResolved: () => void;
+  onSkip: () => void;
+}) {
+  const payload = item.payload as { trigger?: { text: string }; response?: { text: string } };
+  const [busy, setBusy] = useState(false);
+
+  async function resolve(resolution: "APPROVED" | "DISMISSED") {
+    setBusy(true);
+    try {
+      await api(`/api/review/${item.id}`, { method: "POST", json: { resolution } });
+      onResolved();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Failed to resolve");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useReviewShortcuts(isActive, {
+    same: () => resolve("APPROVED"),
+    different: () => resolve("DISMISSED"),
+    edit: () => {},
+    skip: onSkip,
+  });
+
+  return (
+    <div className={`card p-4 ${isActive ? "ring-2 ring-accent/40" : ""}`}>
+      <div className="mb-3">
+        <div className="text-xs text-muted mb-1">Possible conversational response</div>
+        <div className="flex items-center gap-3">
+          <ArabicText text={payload.trigger?.text ?? ""} className="text-lg font-medium" />
+          <span className="text-muted">→</span>
+          <ArabicText text={payload.response?.text ?? ""} className="text-lg font-medium" />
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button disabled={busy} onClick={() => resolve("APPROVED")}>
+          Accept <kbd className="ms-1.5 text-[10px] opacity-60">1</kbd>
+        </Button>
+        <Button variant="secondary" disabled={busy} onClick={() => resolve("DISMISSED")}>
+          Not a response <kbd className="ms-1.5 text-[10px] opacity-60">2</kbd>
+        </Button>
+        <Button variant="ghost" disabled={busy} onClick={onSkip}>
+          Skip <kbd className="ms-1.5 text-[10px] opacity-60">4</kbd>
+        </Button>
+      </div>
+    </div>
+  );
 }
 
 /** Review card for AI-suggested concept matches from the semantic matching cascade (pgvector + LLM judgment). */

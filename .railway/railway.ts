@@ -55,7 +55,7 @@ export default defineRailway(() => {
     // in production on the next `config apply`.
     SEMANTIC_MATCHING_ENABLED: "true",
     SEMANTIC_TOP_K: process.env.SEMANTIC_TOP_K || "10",
-    SEMANTIC_VECTOR_MIN_SIMILARITY: process.env.SEMANTIC_VECTOR_MIN_SIMILARITY || "0.65",
+    SEMANTIC_VECTOR_MIN_SIMILARITY: process.env.SEMANTIC_VECTOR_MIN_SIMILARITY || "0.55",
     SEMANTIC_AUTO_APPROVE: "false",
     SEMANTIC_ADJUDICATION_ENABLED: process.env.SEMANTIC_ADJUDICATION_ENABLED || "true",
 

@@ -7,6 +7,7 @@ import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
 import bcrypt from "bcryptjs";
 import { normalizeArabic as norm } from "../src/services/normalization";
+import { seedLanguagesAndDialects } from "../src/domains/taxonomy/seed-taxonomy";
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const db = new PrismaClient({ adapter });
@@ -50,47 +51,9 @@ async function main() {
     create: { email: "viewer@example.com", name: "Viewer User", role: "VIEWER", passwordHash },
   });
 
-  // --- Languages ---
-  const languages: Record<string, string> = {};
-  for (const [code, name, dir] of [
-    ["ar", "Arabic", "rtl"],
-    ["ar-MSA", "Modern Standard Arabic", "rtl"],
-    ["en", "English", "ltr"],
-    ["fr", "French", "ltr"],
-    ["es", "Spanish", "ltr"],
-  ] as const) {
-    const l = await db.language.upsert({ where: { code }, update: {}, create: { code, name, direction: dir } });
-    languages[code] = l.id;
-  }
-
-  // --- Dialect hierarchy ---
-  async function dialect(name: string, slug: string, parentId: string | null, nameAr?: string) {
-    return db.dialectNode.upsert({ where: { slug }, update: {}, create: { name, slug, parentId, nameAr } });
-  }
-  const common = await dialect("Common Arabic", "common-arabic", null);
-  const msaDialect = await dialect("MSA", "msa", null, "الفصحى");
-  const saudi = await dialect("Saudi", "saudi", common.id);
-  await dialect("Common Saudi", "common-saudi", saudi.id);
-  const najdi = await dialect("Najdi", "najdi", saudi.id, "نجدي");
-  const hijazi = await dialect("Hijazi", "hijazi", saudi.id, "حجازي");
-  const jeddawi = await dialect("Jeddawi", "jeddawi", hijazi.id, "جداوي");
-  await dialect("Makkawi", "makkawi", hijazi.id, "مكاوي");
-  await dialect("Madani", "madani", hijazi.id, "مدني");
-  await dialect("Eastern (Saudi)", "eastern-saudi", saudi.id);
-  const gulf = await dialect("Gulf", "gulf", common.id);
-  await dialect("Kuwaiti", "kuwaiti", gulf.id);
-  await dialect("Emirati", "emirati", gulf.id);
-  const levantine = await dialect("Levantine", "levantine", common.id);
-  const syrian = await dialect("Syrian", "syrian", levantine.id, "سوري");
-  await dialect("Lebanese", "lebanese", levantine.id);
-  await dialect("Jordanian", "jordanian", levantine.id);
-  await dialect("Palestinian", "palestinian", levantine.id);
-  await dialect("Egyptian", "egyptian", common.id, "مصري");
-  await dialect("Iraqi", "iraqi", common.id, "عراقي");
-  const maghrebi = await dialect("Maghrebi", "maghrebi", common.id);
-  await dialect("Moroccan", "moroccan", maghrebi.id);
-  await dialect("Algerian", "algerian", maghrebi.id);
-  await dialect("Tunisian", "tunisian", maghrebi.id);
+  // --- Languages & dialect hierarchy (shared, production-safe taxonomy) ---
+  const { languages, dialects } = await seedLanguagesAndDialects(db);
+  const { msaDialect, najdi, jeddawi, syrian } = dialects;
 
   // --- Taxonomies ---
   for (const t of ["Food & Drink", "Daily Life", "Emotions", "Time", "Conversation"]) {

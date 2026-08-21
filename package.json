@@ -14,7 +14,8 @@
     "worker": "tsx src/worker/index.ts",
     "worker:dev": "tsx watch src/worker/index.ts",
     "migrate:deploy": "prisma migrate deploy",
-    "admin:create": "tsx scripts/create-admin.ts"
+    "admin:create": "tsx scripts/create-admin.ts",
+    "seed:taxonomy": "tsx scripts/seed-taxonomy.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1114.0",

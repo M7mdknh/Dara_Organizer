@@ -12,7 +12,7 @@ describe("JOB_TYPES", () => {
   it("declares every job type required by the background processing architecture", async () => {
     const { JOB_TYPES } = await import("./queue");
     expect(Object.values(JOB_TYPES).sort()).toEqual(
-      ["AI_ENRICH", "DATASET_EXPORT", "GENERATE_EMBEDDINGS", "IMPORT_MATCH", "IMPORT_PARSE", "SEMANTIC_ADJUDICATION"].sort(),
+      ["AI_ENRICH", "DATASET_EXPORT", "GENERATE_EMBEDDINGS", "IMPORT_MATCH", "IMPORT_PARSE", "SEMANTIC_ADJUDICATION", "LANGUAGE_ENRICHMENT"].sort(),
     );
   });
 });

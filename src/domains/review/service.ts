@@ -64,6 +64,41 @@ export async function resolveReviewItem(itemId: string, input: ResolveInput, use
 
     switch (input.resolution) {
       case "APPROVED":
+        if (item.type === "RESPONSE_PATTERN") {
+          // Accepting a proposed trigger/response pair (see
+          // src/domains/imports/conversation-extraction.ts) creates the
+          // actual conversational-response records — never fabricated
+          // automatically, only on explicit human confirmation.
+          const rp = (item.payload ?? {}) as {
+            trigger?: { text?: string; sentenceId?: string };
+            response?: { text?: string; sentenceId?: string };
+            dialectId?: string | null;
+          };
+          if (!rp.trigger?.text || !rp.response?.text) throw new ApiError(400, "Missing trigger/response text");
+          const pattern = await tx.responsePattern.create({ data: { name: `Response to "${rp.trigger.text}"` } });
+          await tx.responseTrigger.create({
+            data: {
+              patternId: pattern.id,
+              textOriginal: rp.trigger.text,
+              textNormalized: normalizeArabic(rp.trigger.text),
+              dialectId: rp.dialectId ?? null,
+              sentenceId: rp.trigger.sentenceId ?? null,
+              origin: "IMPORT",
+            },
+          });
+          await tx.responseVariant.create({
+            data: {
+              patternId: pattern.id,
+              textOriginal: rp.response.text,
+              textNormalized: normalizeArabic(rp.response.text),
+              dialectId: rp.dialectId ?? null,
+              sentenceId: rp.response.sentenceId ?? null,
+              origin: "IMPORT",
+              quality: "CANDIDATE",
+            },
+          });
+          await recordRevision(tx, { entityType: "responsePattern", entityId: pattern.id, kind: "CREATE", newValue: pattern, userId, reason: "Review: response pattern accepted" });
+        }
         break; // keep candidate as-is
       case "ADDED_SYNONYM":
         await relate("SYNONYM");

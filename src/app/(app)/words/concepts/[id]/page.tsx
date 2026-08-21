@@ -11,6 +11,7 @@ interface ConceptDetail {
   id: string;
   key: string;
   gloss: string;
+  canonicalMsa: string | null;
   description: string | null;
   notes: string | null;
   source: { id: string; name: string } | null;
@@ -54,7 +55,7 @@ export default function ConceptDetailPage({ params }: { params: Promise<{ id: st
     <div>
       <PageHeader
         title={c.gloss}
-        subtitle={c.key}
+        subtitle={c.canonicalMsa ? `${c.key} · MSA: ${c.canonicalMsa}` : c.key}
         actions={
           <>
             <Button variant="secondary" onClick={() => setEditing(true)}>Edit</Button>
@@ -144,6 +145,7 @@ export default function ConceptDetailPage({ params }: { params: Promise<{ id: st
 
 function EditConceptForm({ concept, onClose, onSaved }: { concept: ConceptDetail; onClose: () => void; onSaved: () => void }) {
   const [gloss, setGloss] = useState(concept.gloss);
+  const [canonicalMsa, setCanonicalMsa] = useState(concept.canonicalMsa ?? "");
   const [description, setDescription] = useState(concept.description ?? "");
   const [notes, setNotes] = useState(concept.notes ?? "");
   const [saving, setSaving] = useState(false);
@@ -156,7 +158,7 @@ function EditConceptForm({ concept, onClose, onSaved }: { concept: ConceptDetail
           e.preventDefault();
           setSaving(true);
           try {
-            await api(`/api/concepts/${concept.id}`, { method: "PATCH", json: { gloss, description: description || null, notes: notes || null } });
+            await api(`/api/concepts/${concept.id}`, { method: "PATCH", json: { gloss, canonicalMsa: canonicalMsa || null, description: description || null, notes: notes || null } });
             onSaved();
           } finally {
             setSaving(false);
@@ -165,6 +167,9 @@ function EditConceptForm({ concept, onClose, onSaved }: { concept: ConceptDetail
       >
         <Field label="Meaning / gloss">
           <Input value={gloss} onChange={(e) => setGloss(e.target.value)} required />
+        </Field>
+        <Field label="Canonical MSA form">
+          <Input dir="rtl" value={canonicalMsa} onChange={(e) => setCanonicalMsa(e.target.value)} placeholder="الآن" />
         </Field>
         <Field label="Description">
           <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} />

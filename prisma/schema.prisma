@@ -101,13 +101,16 @@ model User {
 // ---------- Configurable taxonomies ----------
 
 model Language {
-  id        String  @id @default(cuid())
-  code      String  @unique // e.g. ar, ar-MSA, en, fr, es
-  name      String
-  nameAr    String?
-  direction String  @default("ltr") // ltr | rtl
-  enabled   Boolean @default(true)
-  sortOrder Int     @default(0)
+  id         String  @id @default(cuid())
+  code       String  @unique // e.g. ar, ar-MSA, en, fr, es
+  name       String
+  nameAr     String?
+  nativeName String? // e.g. "Français" for French — from the predefined catalog, editable
+  script     String  @default("Latin") // Arabic | Latin | Cyrillic | ...
+  direction  String  @default("ltr") // ltr | rtl
+  enabled    Boolean @default(true)
+  aiEnrichmentEnabled Boolean @default(true) // whether background enrichment (translation) targets this language
+  sortOrder  Int     @default(0)
 
   expressions Expression[]
   sentences   Sentence[]
@@ -119,6 +122,8 @@ model DialectNode {
   nameAr      String?
   slug        String  @unique
   description String?
+  region      String? // free-text geographic hint, e.g. "Jeddah, Saudi Arabia"
+  aiContext   String? // free-text hint given to AI so it knows what this dialect is (never fabricated data — just recognition context)
   parentId    String?
   parent      DialectNode?  @relation("dialectTree", fields: [parentId], references: [id], onDelete: SetNull)
   children    DialectNode[] @relation("dialectTree")
@@ -218,16 +223,23 @@ model ConversationalFunction {
 // ---------- Semantic core ----------
 
 model Concept {
-  id          String   @id @default(cuid())
-  key         String   @unique // e.g. TIME_NOW
-  gloss       String // short meaning, e.g. "at the present time"
-  description String?
-  notes       String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  origin      Origin   @default(HUMAN)
-  sourceId    String?
-  source      Source?  @relation(fields: [sourceId], references: [id], onDelete: SetNull)
+  id            String   @id @default(cuid())
+  key           String   @unique // e.g. TIME_NOW
+  gloss         String // short meaning, e.g. "at the present time" (English definition)
+  definitionAr  String? // short Arabic definition, e.g. "في الوقت الحالي"
+  // Cached display copy of the linked canonical-MSA expression's text (see
+  // ConceptExpression + Language code "ar-MSA"). This is a read-optimization
+  // cache, not the source of truth — the actual link is the ConceptExpression
+  // row; this field is kept in sync whenever that link changes and must
+  // never be treated as authoritative on its own.
+  canonicalMsa  String?
+  description   String?
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  origin        Origin   @default(HUMAN)
+  sourceId      String?
+  source        Source?  @relation(fields: [sourceId], references: [id], onDelete: SetNull)
 
   expressions ConceptExpression[]
   sentences   SentenceConcept[]

@@ -3,6 +3,7 @@
 import { Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Spinner } from "@/components/ui";
+import { MeaningsView } from "@/components/MeaningsView";
 import ExplorePage from "@/app/(app)/explore/page";
 import WordsPage from "@/app/(app)/words/page";
 import SentencesPage from "@/app/(app)/sentences/page";
@@ -10,11 +11,12 @@ import ConversationsPage from "@/app/(app)/conversations/page";
 import ResponsesPage from "@/app/(app)/responses/page";
 
 const TABS = [
-  { key: "all", label: "All" },
-  { key: "words", label: "Words & Expressions" },
+  { key: "meanings", label: "Meanings" },
   { key: "sentences", label: "Sentences" },
   { key: "conversations", label: "Conversations" },
   { key: "responses", label: "Responses" },
+  { key: "words", label: "Words & Expressions" },
+  { key: "all", label: "Search all" },
 ] as const;
 
 type TabKey = (typeof TABS)[number]["key"];
@@ -22,10 +24,10 @@ type TabKey = (typeof TABS)[number]["key"];
 function DataContent() {
   const params = useSearchParams();
   const router = useRouter();
-  const tab = (TABS.some((t) => t.key === params.get("tab")) ? params.get("tab") : "all") as TabKey;
+  const tab = (TABS.some((t) => t.key === params.get("tab")) ? params.get("tab") : "meanings") as TabKey;
 
   function setTab(next: TabKey) {
-    router.push(next === "all" ? "/data" : `/data?tab=${next}`);
+    router.push(next === "meanings" ? "/data" : `/data?tab=${next}`);
   }
 
   return (
@@ -44,6 +46,7 @@ function DataContent() {
         ))}
       </div>
 
+      {tab === "meanings" && <MeaningsView />}
       {tab === "all" && <ExplorePage />}
       {tab === "words" && <WordsPage />}
       {tab === "sentences" && <SentencesPage />}

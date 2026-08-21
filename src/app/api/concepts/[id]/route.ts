@@ -39,6 +39,7 @@ export const GET = withAuth<Ctx>("VIEWER", async (_req, _user, ctx) => {
 const patchSchema = z.object({
   key: z.string().min(1).regex(/^[A-Z0-9_]+$/).optional(),
   gloss: z.string().min(1).optional(),
+  canonicalMsa: z.string().nullish(),
   description: z.string().nullish(),
   notes: z.string().nullish(),
   reason: z.string().optional(),

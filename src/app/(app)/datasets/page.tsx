@@ -22,12 +22,16 @@ const QUALITY_PRESETS = {
   everything: ["GOLD", "SILVER", "REFERENCE", "CANDIDATE"],
 };
 
+const MEANING_CENTERED_TYPES = ["concept-lexicon", "sentence-equivalents", "conversation-training", "chat-finetune"] as const;
+
 export default function DatasetsPage() {
   const { data, loading, refetch } = useApi<{ items: DatasetRow[] }>("/api/datasets");
   const lookups = useLookups();
 
   const [name, setName] = useState("");
-  const [entity, setEntity] = useState<"sentence" | "conversation">("sentence");
+  const [entity, setEntity] = useState<
+    "sentence" | "conversation" | "concept-lexicon" | "sentence-equivalents" | "conversation-training" | "chat-finetune"
+  >("sentence-equivalents");
   const [dialectId, setDialectId] = useState("");
   const [qualityPreset, setQualityPreset] = useState<"verified" | "everything">("verified");
   const [format, setFormat] = useState<"jsonl" | "csv">("jsonl");
@@ -66,22 +70,34 @@ export default function DatasetsPage() {
     }
   }
 
+  const isMeaningCentered = (MEANING_CENTERED_TYPES as readonly string[]).includes(entity);
+
   async function buildAndExport() {
     setBusy(true);
     setError(null);
     try {
-      const res = await api<{ item: { id: string } }>("/api/datasets", {
-        method: "POST",
-        json: {
-          name: name.trim() || `export-${new Date().toISOString().slice(0, 10)}`,
-          filters,
-          splitStrategy: { train: train / 100, validation: validation / 100, test: test / 100, seed: 42, groupBy },
-        },
-      });
-      window.location.href = `/api/datasets/${res.item.id}/export?format=${format}`;
+      if (isMeaningCentered) {
+        // Purposeful, meaning-centered exports read directly from the
+        // Concept/UtteranceGroup/ResponsePattern graph — no split-building
+        // step needed, see src/domains/datasets/meaning-exports.ts.
+        const p = new URLSearchParams();
+        if (dialectId) p.set("dialectId", dialectId);
+        if (qualityPreset === "everything") p.set("includeUnverified", "true");
+        window.location.href = `/api/exports/${entity}?${p.toString()}`;
+      } else {
+        const res = await api<{ item: { id: string } }>("/api/datasets", {
+          method: "POST",
+          json: {
+            name: name.trim() || `export-${new Date().toISOString().slice(0, 10)}`,
+            filters,
+            splitStrategy: { train: train / 100, validation: validation / 100, test: test / 100, seed: 42, groupBy },
+          },
+        });
+        window.location.href = `/api/datasets/${res.item.id}/export?format=${format}`;
+        void refetch();
+      }
       setName("");
       setPreview(null);
-      void refetch();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Export failed");
     } finally {
@@ -95,10 +111,14 @@ export default function DatasetsPage() {
 
       <div className="card p-5 mb-6 space-y-4">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Field label="Data type">
-            <Select className="w-full" value={entity} onChange={(e) => setEntity(e.target.value as "sentence" | "conversation")}>
-              <option value="sentence">Sentences</option>
-              <option value="conversation">Conversations</option>
+          <Field label="Export type">
+            <Select className="w-full" value={entity} onChange={(e) => setEntity(e.target.value as typeof entity)}>
+              <option value="sentence-equivalents">Sentence equivalents (dialects → MSA)</option>
+              <option value="concept-lexicon">Concept / dialect lexicon</option>
+              <option value="conversation-training">Conversational responses (weighted)</option>
+              <option value="chat-finetune">Chat fine-tuning pairs</option>
+              <option value="sentence">Raw sentences (advanced)</option>
+              <option value="conversation">Raw conversations (advanced)</option>
             </Select>
           </Field>
           <Field label="Dialect">
@@ -114,10 +134,14 @@ export default function DatasetsPage() {
             </Select>
           </Field>
           <Field label="Format">
-            <Select className="w-full" value={format} onChange={(e) => setFormat(e.target.value as "jsonl" | "csv")}>
-              <option value="jsonl">JSONL</option>
-              <option value="csv">CSV</option>
-            </Select>
+            {isMeaningCentered ? (
+              <div className="text-sm py-1.5 text-muted">JSONL</div>
+            ) : (
+              <Select className="w-full" value={format} onChange={(e) => setFormat(e.target.value as "jsonl" | "csv")}>
+                <option value="jsonl">JSONL</option>
+                <option value="csv">CSV</option>
+              </Select>
+            )}
           </Field>
         </div>
 

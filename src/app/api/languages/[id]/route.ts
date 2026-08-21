@@ -10,7 +10,10 @@ const patchSchema = z.object({
   code: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
   nameAr: z.string().nullish(),
+  nativeName: z.string().nullish(),
+  script: z.string().optional(),
   direction: z.enum(["ltr", "rtl"]).optional(),
+  aiEnrichmentEnabled: z.boolean().optional(),
   enabled: z.boolean().optional(),
   sortOrder: z.number().int().optional(),
 });

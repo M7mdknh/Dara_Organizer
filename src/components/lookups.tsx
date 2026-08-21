@@ -16,8 +16,11 @@ export interface Language {
   id: string;
   code: string;
   name: string;
+  nativeName?: string | null;
+  script?: string;
   direction: string;
   enabled: boolean;
+  aiEnrichmentEnabled?: boolean;
 }
 export interface TaxonomyItem {
   id: string;
