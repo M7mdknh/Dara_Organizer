@@ -452,7 +452,7 @@ export async function extractLinguisticKnowledge(
           await recordRevision(tx, { entityType: "sentence", entityId: msaSentence.id, kind: "CREATE", newValue: msaSentence, reason: "AI linguistic extraction (MSA equivalent)" });
         }
       }
-    });
+    }, { timeout: 120_000 });
 
     await db.enrichmentJob.update({
       where: { id: job.id },

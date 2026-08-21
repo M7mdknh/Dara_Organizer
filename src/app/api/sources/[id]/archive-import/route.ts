@@ -64,7 +64,7 @@ export const POST = withAuth<Ctx>("EDITOR", async (req, user, ctx) => {
         archivedSentences++;
       }
     }
-  });
+  }, { timeout: 30_000 });
 
   return NextResponse.json({ archivedExpressions, archivedSentences, consideredRows: rows.length });
 });
